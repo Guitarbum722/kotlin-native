@@ -90,7 +90,8 @@ internal class LinkStage(val context: Context) {
             context.config.tempFiles.create(name, suffix).absolutePath
 
     private fun targetTool(tool: String, vararg arg: String) {
-        val absoluteToolName = "${platform.absoluteTargetToolchain}/bin/$tool"
+        // TODO: Is it valid for non-Darwin targets?
+        val absoluteToolName = "${platform.absoluteTargetToolchain}/usr/bin/$tool"
         runTool(absoluteToolName, *arg)
     }
 
@@ -137,6 +138,40 @@ internal class LinkStage(val context: Context) {
         hostLlvmTool("llc", optimizedBc, "-filetype=obj", "-o", combinedO, *llcFlags.toTypedArray())
 
         return combinedO
+    }
+
+    private fun llvmLinkAndOpt(bitcodeFiles: List<BitcodeFile>): BitcodeFile {
+        val combinedBc = temporary("combined", ".bc")
+        hostLlvmTool("llvm-link", "-o", combinedBc, *bitcodeFiles.toTypedArray())
+
+        val optimizedBc = temporary("optimized", ".bc")
+
+        val optimizationFlags = when {
+            optimize -> listOf("-O2", "-std-link-opts", "-internalize", "-globaldce")
+            debug -> listOf("-O0", "-internalize", "-globaldce")
+            else -> listOf("-O1", "-internalize", "-globaldce")
+        }
+
+        val flags = llvmProfilingFlags() + optimizationFlags
+        hostLlvmTool("opt", combinedBc, "-o=$optimizedBc", *flags.toTypedArray())
+        return optimizedBc
+    }
+
+    private fun clang(file: BitcodeFile): ObjectFile {
+        val objectFile = temporary("result", ".o")
+
+        val bitcodeEmbeddingFlags = BitcodeEmbedding.getClangOptions(context.config).toTypedArray()
+        val codegenFlags: Array<String> = when {
+            optimize -> listOf("-O2")
+            debug -> listOf("-O0")
+            else -> listOf("-O0")
+        }.toTypedArray()
+        val triple = listOf("-triple", context.llvm.targetTriple).toTypedArray()
+        targetTool("clang++", "-cc1", "-emit-obj",
+                *triple, *bitcodeEmbeddingFlags, *codegenFlags,
+                "-disable-llvm-optzns",
+                "-x", "ir", file, "-o", objectFile)
+        return objectFile
     }
 
     // llvm-lto, opt and llc share same profiling flags, so we can
@@ -229,12 +264,14 @@ internal class LinkStage(val context: Context) {
                 bitcodeLibraries.map { it.bitcodePaths }.flatten().filter { it.isBitcode }
 
         objectFiles.add(when (platform.configurables) {
-            is WasmConfigurables
-            -> bitcodeToWasm(bitcodeFiles)
-            is ZephyrConfigurables
-            -> llvmLinkAndLlc(bitcodeFiles)
-            else
-            -> llvmLto(bitcodeFiles)
+            is AppleConfigurables ->
+                clang(llvmLinkAndOpt(bitcodeFiles))
+            is WasmConfigurables ->
+                bitcodeToWasm(bitcodeFiles)
+            is ZephyrConfigurables ->
+                llvmLinkAndLlc(bitcodeFiles)
+            else ->
+                llvmLto(bitcodeFiles)
         })
     }
 

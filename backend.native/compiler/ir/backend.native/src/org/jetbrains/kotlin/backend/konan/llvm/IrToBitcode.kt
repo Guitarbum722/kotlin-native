@@ -318,7 +318,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
 
         codegen.objCDataGenerator?.finishModule()
 
-        BitcodeEmbedding.processModule(context.llvm)
+//        BitcodeEmbedding.processModule(context.llvm)
         context.coverage.writeRegionInfo()
         appendDebugSelector()
         appendLlvmUsed("llvm.used", context.llvm.usedFunctions + context.llvm.usedGlobals)
