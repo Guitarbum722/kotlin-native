@@ -65,27 +65,6 @@ internal class LinkStage(val context: Context) {
                     .logWith(context::log)
                     .execute()
 
-    private fun llvmLto(files: List<BitcodeFile>): ObjectFile {
-        val combined = temporary("combined", ".o")
-
-        val tool = "${platform.absoluteLlvmHome}/bin/llvm-lto"
-        val command = mutableListOf(tool, "-o", combined)
-        command.addNonEmpty(platform.llvmLtoFlags)
-        command.addNonEmpty(llvmProfilingFlags())
-        when {
-            optimize -> command.addNonEmpty(platform.llvmLtoOptFlags)
-            debug -> command.addNonEmpty(platform.llvmDebugOptFlags)
-            else -> command.addNonEmpty(platform.llvmLtoNooptFlags)
-        }
-        command.addNonEmpty(platform.llvmLtoDynamicFlags)
-        command.addNonEmpty(files)
-        // Prevent symbols from being deleted by DCE.
-        command.addNonEmpty(exportedSymbols.map { "-exported-symbol=${mangleSymbol(it)}"} )
-        runTool(command)
-
-        return combined
-    }
-
     private fun temporary(name: String, suffix: String): String =
             context.config.tempFiles.create(name, suffix).absolutePath
 
@@ -100,34 +79,71 @@ internal class LinkStage(val context: Context) {
         runTool(absoluteToolName, *arg)
     }
 
-    private fun bitcodeToWasm(bitcodeFiles: List<BitcodeFile>): String {
-        val configurables = platform.configurables as WasmConfigurables
+    private fun llvmLto(files: List<BitcodeFile>): ObjectFile {
+        val configurables = platform.configurables as LlvmLtoFlags
+        val combined = temporary("combined", ".o")
+        val arguments = mutableListOf<String>().apply {
+            addNonEmpty(configurables.llvmLtoFlags)
+            addNonEmpty(llvmProfilingFlags())
+            when {
+                optimize -> addNonEmpty(configurables.llvmLtoOptFlags)
+                debug -> addNonEmpty(platform.llvmDebugOptFlags)
+                else -> addNonEmpty(configurables.llvmLtoNooptFlags)
+            }
+            addNonEmpty(configurables.llvmLtoDynamicFlags)
+            addNonEmpty(files)
+            // Prevent symbols from being deleted by DCE.
+            addNonEmpty(exportedSymbols.map { "-exported-symbol=${mangleSymbol(it)}"} )
+        }
+        hostLlvmTool("llvm-lto", "-o", combined, *arguments.toTypedArray())
+        return combined
+    }
 
-        val combinedBc = temporary("combined", ".bc")
-        // TODO: use -only-needed for the stdlib
+    private fun llvmLink(bitcodeFiles: List<BitcodeFile>): BitcodeFile {
+        val combinedBc = temporary("link_output", ".bc")
         hostLlvmTool("llvm-link", *bitcodeFiles.toTypedArray(), "-o", combinedBc)
-        val optFlags = (configurables.optFlags + when {
-            optimize -> configurables.optOptFlags
-            debug -> configurables.optDebugFlags
-            else -> configurables.optNooptFlags
+        return combinedBc
+    }
+
+    private fun opt(bitcodeFile: BitcodeFile): BitcodeFile {
+        val optFlags = platform.configurables as OptFlags
+        val flags = (optFlags.optFlags + when {
+            optimize -> optFlags.optOptFlags
+            debug -> optFlags.optDebugFlags
+            else -> optFlags.optNooptFlags
         } + llvmProfilingFlags()).toTypedArray()
-        val optimizedBc = temporary("optimized", ".bc")
-        hostLlvmTool("opt", combinedBc, "-o", optimizedBc, *optFlags)
-        val llcFlags = (configurables.llcFlags + when {
-            optimize -> configurables.llcOptFlags
-            debug -> configurables.llcDebugFlags
-            else -> configurables.llcNooptFlags
+        val optimizedBc = temporary("opt_output", ".bc")
+        hostLlvmTool("opt", bitcodeFile, "-o", optimizedBc, *flags)
+        return optimizedBc
+    }
+
+    private fun llc(bitcodeFile: BitcodeFile): ObjectFile {
+        val llcFlags = platform.configurables as LlcFlags
+        val flags = (llcFlags.llcFlags + when {
+            optimize -> llcFlags.llcOptFlags
+            debug -> llcFlags.llcDebugFlags
+            else -> llcFlags.llcNooptFlags
         } + llvmProfilingFlags()).toTypedArray()
-        val combinedO = temporary("combined", ".o")
-        hostLlvmTool("llc", optimizedBc, "-o", combinedO, *llcFlags, "-filetype=obj")
+        val combinedO = temporary("llc_output", ".o")
+        hostLlvmTool("llc", bitcodeFile, "-o", combinedO, *flags, "-filetype=obj")
+        return combinedO
+    }
+
+    private fun bitcodeToWasm(bitcodeFiles: List<BitcodeFile>): String {
+        val combinedBc = llvmLink(bitcodeFiles)
+        val optimizedBc = opt(combinedBc)
+        val combinedO = llc(optimizedBc)
+
+        // TODO: should be moved to linker.
+        val lldFlags = platform.configurables as LldFlags
         val linkedWasm = temporary("linked", ".wasm")
-        hostLlvmTool("wasm-ld", combinedO, "-o", linkedWasm, *configurables.lldFlags.toTypedArray())
+        hostLlvmTool("wasm-ld", combinedO, "-o", linkedWasm, *lldFlags.lldFlags.toTypedArray())
+
         return linkedWasm
     }
 
     private fun llvmLinkAndLlc(bitcodeFiles: List<BitcodeFile>): String {
-        val combinedBc = temporary("combined", ".bc")
-        hostLlvmTool("llvm-link", "-o", combinedBc, *bitcodeFiles.toTypedArray())
+        val combinedBc = llvmLink(bitcodeFiles)
 
         val optimizedBc = temporary("optimized", ".bc")
         val optFlags = llvmProfilingFlags() + listOf("-O3", "-internalize", "-globaldce")
@@ -140,37 +156,22 @@ internal class LinkStage(val context: Context) {
         return combinedO
     }
 
-    private fun llvmLinkAndOpt(bitcodeFiles: List<BitcodeFile>): BitcodeFile {
-        val combinedBc = temporary("combined", ".bc")
-        hostLlvmTool("llvm-link", "-o", combinedBc, *bitcodeFiles.toTypedArray())
-
-        val optimizedBc = temporary("optimized", ".bc")
-
-        val optimizationFlags = when {
-            optimize -> listOf("-O2", "-std-link-opts", "-internalize", "-globaldce")
-            debug -> listOf("-O0", "-internalize", "-globaldce")
-            else -> listOf("-O1", "-internalize", "-globaldce")
-        }
-
-        val flags = llvmProfilingFlags() + optimizationFlags
-        hostLlvmTool("opt", combinedBc, "-o=$optimizedBc", *flags.toTypedArray())
-        return optimizedBc
-    }
-
     private fun clang(file: BitcodeFile): ObjectFile {
+        val clangFlags = platform.configurables as ClangFlags
         val objectFile = temporary("result", ".o")
 
-        val bitcodeEmbeddingFlags = BitcodeEmbedding.getClangOptions(context.config).toTypedArray()
-        val codegenFlags: Array<String> = when {
-            optimize -> listOf("-O2")
-            debug -> listOf("-O0")
-            else -> listOf("-O0")
-        }.toTypedArray()
-        val triple = listOf("-triple", context.llvm.targetTriple).toTypedArray()
-        targetTool("clang++", "-cc1", "-emit-obj",
-                *triple, *bitcodeEmbeddingFlags, *codegenFlags,
-                "-disable-llvm-optzns",
-                "-x", "ir", file, "-o", objectFile)
+        val flags = mutableListOf<String>().apply {
+            addNonEmpty(clangFlags.clangFlags)
+            addNonEmpty(listOf("-triple", context.llvm.targetTriple))
+            addNonEmpty(when {
+                optimize -> clangFlags.clangOptFlags
+                debug -> clangFlags.clangDebugFlags
+                else -> clangFlags.clangNooptFlags
+            })
+            addNonEmpty(BitcodeEmbedding.getClangOptions(context.config))
+            addNonEmpty(clangFlags.clangDynamicFlags)
+        }
+        targetTool("clang++", *flags.toTypedArray(), file, "-o", objectFile)
         return objectFile
     }
 
@@ -265,13 +266,15 @@ internal class LinkStage(val context: Context) {
 
         objectFiles.add(when (platform.configurables) {
             is AppleConfigurables ->
-                clang(llvmLinkAndOpt(bitcodeFiles))
+                clang(opt(llvmLink(bitcodeFiles)))
             is WasmConfigurables ->
                 bitcodeToWasm(bitcodeFiles)
             is ZephyrConfigurables ->
                 llvmLinkAndLlc(bitcodeFiles)
-            else ->
+            is LlvmLtoFlags ->
                 llvmLto(bitcodeFiles)
+            else ->
+                error("Unknown configurables kind!")
         })
     }
 
