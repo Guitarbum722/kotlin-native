@@ -4,12 +4,9 @@
  */
 package org.jetbrains.kotlin.backend.konan.llvm.coverage
 
-import llvm.LLVMAddInstrProfPass
-import llvm.LLVMPassManagerRef
-import llvm.LLVMValueRef
+import llvm.*
+import org.jetbrains.kotlin.backend.konan.*
 import org.jetbrains.kotlin.backend.konan.Context
-import org.jetbrains.kotlin.backend.konan.KonanConfigKeys
-import org.jetbrains.kotlin.backend.konan.isNativeBinary
 import org.jetbrains.kotlin.backend.konan.reportCompilationError
 import org.jetbrains.kotlin.descriptors.ModuleDescriptor
 import org.jetbrains.kotlin.ir.declarations.IrFile
@@ -124,4 +121,11 @@ internal class CoverageManager(val context: Context) {
         } else {
             emptyList()
         }
+
+    fun fixSymbolsLinkage(llvmModule: LLVMModuleRef) {
+        val global = LLVMGetNamedGlobal(llvmModule, llvmProfileFilenameGlobal)
+                ?: context.reportCompilationError("No such symbol in module: $llvmProfileFilenameGlobal")
+        // A little hack that preserves global from DCE.
+        LLVMSetLinkage(global, LLVMLinkage.LLVMAvailableExternallyLinkage)
+    }
 }

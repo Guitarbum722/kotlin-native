@@ -42,6 +42,7 @@ internal fun runBitcodePasses(context: Context) {
     context.coverage.addLlvmPasses(passManager)
     LLVMRunPassManager(passManager, llvmModule)
     LLVMDisposePassManager(passManager)
+    context.coverage.fixSymbolsLinkage(llvmModule)
 }
 
 internal fun produceOutput(context: Context) {

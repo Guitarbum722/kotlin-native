@@ -15,6 +15,13 @@ typealias BitcodeFile = String
 typealias ObjectFile = String
 typealias ExecutableFile = String
 
+internal fun mangleSymbol(target: KonanTarget,symbol: String) =
+        if (target.family == Family.IOS || target.family == Family.OSX) {
+            "_$symbol"
+        } else {
+            symbol
+        }
+
 private fun determineLinkerOutput(context: Context): LinkerOutputKind =
     when (context.config.produce) {
         CompilerOutputKind.FRAMEWORK -> {
@@ -27,37 +34,18 @@ private fun determineLinkerOutput(context: Context): LinkerOutputKind =
         else -> TODO("${context.config.produce} should not reach native linker stage")
     }
 
-internal class LinkStage(val context: Context) {
+internal class BitcodeCompiler(val context: Context) {
 
-    private val config = context.config.configuration
     private val target = context.config.target
     private val platform = context.config.platform
-    private val linker = platform.linker
-
     private val optimize = context.shouldOptimize()
     private val debug = context.config.debug
-    private val linkerOutput = determineLinkerOutput(context)
-
-    private val nomain = config.get(KonanConfigKeys.NOMAIN) ?: false
-    private val emitted = context.bitcodeFileName
-
-    private val bitcodeLibraries = context.llvm.bitcodeToLink
-    private val nativeDependencies = context.llvm.nativeDependenciesToLink
-
-    private val additionalBitcodeFilesToLink = context.llvm.additionalProducedBitcodeFiles
 
     private fun MutableList<String>.addNonEmpty(elements: List<String>) {
         addAll(elements.filter { !it.isEmpty() })
     }
 
     private val exportedSymbols = context.coverage.addExportedSymbols()
-
-    private fun mangleSymbol(symbol: String) =
-            if (target.family == Family.IOS || target.family == Family.OSX) {
-                "_$symbol"
-            } else {
-                symbol
-            }
 
     private fun runTool(command: List<String>) = runTool(*command.toTypedArray())
     private fun runTool(vararg command: String) =
@@ -93,7 +81,7 @@ internal class LinkStage(val context: Context) {
             addNonEmpty(configurables.llvmLtoDynamicFlags)
             addNonEmpty(files)
             // Prevent symbols from being deleted by DCE.
-            addNonEmpty(exportedSymbols.map { "-exported-symbol=${mangleSymbol(it)}"} )
+            addNonEmpty(exportedSymbols.map { "-exported-symbol=${mangleSymbol(target, it)}"} )
         }
         hostLlvmTool("llvm-lto", "-o", combined, *arguments.toTypedArray())
         return combined
@@ -132,12 +120,12 @@ internal class LinkStage(val context: Context) {
     private fun bitcodeToWasm(bitcodeFiles: List<BitcodeFile>): String {
         val combinedBc = llvmLink(bitcodeFiles)
         val optimizedBc = opt(combinedBc)
-        val combinedO = llc(optimizedBc)
+        val compiled = llc(optimizedBc)
 
         // TODO: should be moved to linker.
         val lldFlags = platform.configurables as LldFlags
         val linkedWasm = temporary("linked", ".wasm")
-        hostLlvmTool("wasm-ld", combinedO, "-o", linkedWasm, *lldFlags.lldFlags.toTypedArray())
+        hostLlvmTool("wasm-ld", compiled, "-o", linkedWasm, *lldFlags.lldFlags.toTypedArray())
 
         return linkedWasm
     }
@@ -188,6 +176,55 @@ internal class LinkStage(val context: Context) {
         return flags
     }
 
+    fun makeObjectFiles(bitcodeFile: BitcodeFile): List<ObjectFile> {
+        val bitcodeLibraries = context.llvm.bitcodeToLink
+        val additionalBitcodeFilesToLink = context.llvm.additionalProducedBitcodeFiles
+        val bitcodeFiles = listOf(bitcodeFile) + additionalBitcodeFilesToLink +
+                bitcodeLibraries.map { it.bitcodePaths }.flatten().filter { it.isBitcode }
+        return listOf(when (platform.configurables) {
+            is AppleConfigurables ->
+                clang(opt(llvmLink(bitcodeFiles)))
+            is WasmConfigurables ->
+                bitcodeToWasm(bitcodeFiles)
+            is ZephyrConfigurables ->
+                llvmLinkAndLlc(bitcodeFiles)
+            is LlvmLtoFlags ->
+                llvmLto(bitcodeFiles)
+            else ->
+                error("Unsupported configurables kind: ${platform.configurables::class.simpleName}!")
+        })
+    }
+}
+
+// TODO: We have a Linker.kt file in the shared module.
+internal class Linker(val context: Context) {
+
+    private val platform = context.config.platform
+    private val config = context.config.configuration
+    private val linkerOutput = determineLinkerOutput(context)
+    private val nomain = config.get(KonanConfigKeys.NOMAIN) ?: false
+    private val linker = platform.linker
+    private val target = context.config.target
+    private val optimize = context.shouldOptimize()
+    private val debug = context.config.debug
+
+    // Ideally we'd want to have
+    //      #pragma weak main = Konan_main
+    // in the launcher.cpp.
+    // Unfortunately, anything related to weak linking on MacOS
+    // only seems to be working with dynamic libraries.
+    // So we stick to "-alias _main _konan_main" on Mac.
+    // And just do the same on Linux.
+    private val entryPointSelector: List<String>
+        get() = if (nomain || linkerOutput != LinkerOutputKind.EXECUTABLE) emptyList() else platform.entrySelector
+
+    fun link(objectFiles: List<ObjectFile>) {
+        val nativeDependencies = context.llvm.nativeDependenciesToLink
+        val includedBinaries = nativeDependencies.map { it.includedPaths }.flatten()
+        val libraryProvidedLinkerFlags = nativeDependencies.map { it.linkerOpts }.flatten()
+        runLinker(objectFiles, includedBinaries, libraryProvidedLinkerFlags)
+    }
+
     private fun asLinkerArgs(args: List<String>): List<String> {
         if (linker.useCompilerDriverAsLinker) {
             return args
@@ -205,19 +242,9 @@ internal class LinkStage(val context: Context) {
         return result
     }
 
-    // Ideally we'd want to have 
-    //      #pragma weak main = Konan_main
-    // in the launcher.cpp.
-    // Unfortunately, anything related to weak linking on MacOS
-    // only seems to be working with dynamic libraries.
-    // So we stick to "-alias _main _konan_main" on Mac.
-    // And just do the same on Linux.
-    private val entryPointSelector: List<String>
-        get() = if (nomain || linkerOutput != LinkerOutputKind.EXECUTABLE) emptyList() else platform.entrySelector
-
-    private fun link(objectFiles: List<ObjectFile>,
-                     includedBinaries: List<String>,
-                     libraryProvidedLinkerFlags: List<String>): ExecutableFile? {
+    private fun runLinker(objectFiles: List<ObjectFile>,
+                          includedBinaries: List<String>,
+                          libraryProvidedLinkerFlags: List<String>): ExecutableFile? {
         val frameworkLinkerArgs: List<String>
         val executable: String
 
@@ -257,34 +284,4 @@ internal class LinkStage(val context: Context) {
         return executable
     }
 
-    val objectFiles = mutableListOf<String>()
-
-    fun makeObjectFiles() {
-
-        val bitcodeFiles = listOf(emitted) + additionalBitcodeFilesToLink +
-                bitcodeLibraries.map { it.bitcodePaths }.flatten().filter { it.isBitcode }
-
-        objectFiles.add(when (platform.configurables) {
-            is AppleConfigurables ->
-                clang(opt(llvmLink(bitcodeFiles)))
-            is WasmConfigurables ->
-                bitcodeToWasm(bitcodeFiles)
-            is ZephyrConfigurables ->
-                llvmLinkAndLlc(bitcodeFiles)
-            is LlvmLtoFlags ->
-                llvmLto(bitcodeFiles)
-            else ->
-                error("Unknown configurables kind!")
-        })
-    }
-
-    fun linkStage() {
-        val includedBinaries =
-                nativeDependencies.map { it.includedPaths }.flatten()
-
-        val libraryProvidedLinkerFlags =
-                nativeDependencies.map { it.linkerOpts }.flatten()
-
-        link(objectFiles, includedBinaries, libraryProvidedLinkerFlags)
-    }
 }
