@@ -103,10 +103,11 @@ internal class CoverageManager(val context: Context) {
     }
 
     /**
-     * Add InstrProfilingLegacyPass to the list of llvm passes
+     * Add passes that should be executed after main LLVM optimization pipeline.
      */
-    fun addLlvmPasses(passManager: LLVMPassManagerRef) {
+    fun addLateLlvmPasses(passManager: LLVMPassManagerRef) {
         if (enabled) {
+            // It's a late pass since DCE can kill __llvm_profile_filename global.
             LLVMAddInstrProfPass(passManager, outputFileName)
         }
     }
@@ -121,11 +122,4 @@ internal class CoverageManager(val context: Context) {
         } else {
             emptyList()
         }
-
-    fun fixSymbolsLinkage(llvmModule: LLVMModuleRef) {
-        val global = LLVMGetNamedGlobal(llvmModule, llvmProfileFilenameGlobal)
-                ?: context.reportCompilationError("No such symbol in module: $llvmProfileFilenameGlobal")
-        // A little hack that preserves global from DCE.
-        LLVMSetLinkage(global, LLVMLinkage.LLVMAvailableExternallyLinkage)
-    }
 }

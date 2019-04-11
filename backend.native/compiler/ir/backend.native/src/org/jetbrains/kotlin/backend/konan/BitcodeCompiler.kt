@@ -5,6 +5,8 @@
 
 package org.jetbrains.kotlin.backend.konan
 
+import llvm.*
+import org.jetbrains.kotlin.backend.konan.llvm.parseBitcodeFile
 import org.jetbrains.kotlin.konan.KonanExternalToolFailure
 import org.jetbrains.kotlin.konan.exec.Command
 import org.jetbrains.kotlin.konan.file.File
@@ -21,6 +23,19 @@ internal fun mangleSymbol(target: KonanTarget,symbol: String) =
         } else {
             symbol
         }
+
+internal fun shouldRunLateBitcodePasses(context: Context): Boolean {
+    return context.coverage.enabled
+}
+
+internal fun runLateBitcodePasses(context: Context, llvmModule: LLVMModuleRef) {
+    val passManager = LLVMCreatePassManager()!!
+    val targetLibraryInfo = LLVMGetTargetLibraryInfo(llvmModule)
+    LLVMAddTargetLibraryInfo(targetLibraryInfo, passManager)
+    context.coverage.addLateLlvmPasses(passManager)
+    LLVMRunPassManager(passManager, llvmModule)
+    LLVMDisposePassManager(passManager)
+}
 
 private fun determineLinkerOutput(context: Context): LinkerOutputKind =
     when (context.config.produce) {
@@ -57,8 +72,11 @@ internal class BitcodeCompiler(val context: Context) {
             context.config.tempFiles.create(name, suffix).absolutePath
 
     private fun targetTool(tool: String, vararg arg: String) {
-        // TODO: Is it valid for non-Darwin targets?
-        val absoluteToolName = "${platform.absoluteTargetToolchain}/usr/bin/$tool"
+        val absoluteToolName = if (platform.configurables is AppleConfigurables) {
+            "${platform.absoluteTargetToolchain}/usr/bin/$tool"
+        } else {
+            "${platform.absoluteTargetToolchain}/bin/$tool"
+        }
         runTool(absoluteToolName, *arg)
     }
 
@@ -102,6 +120,13 @@ internal class BitcodeCompiler(val context: Context) {
         } + llvmProfilingFlags()).toTypedArray()
         val optimizedBc = temporary("opt_output", ".bc")
         hostLlvmTool("opt", bitcodeFile, "-o", optimizedBc, *flags)
+
+        if (shouldRunLateBitcodePasses(context)) {
+            val module = parseBitcodeFile(optimizedBc)
+            runLateBitcodePasses(context, module)
+            LLVMWriteBitcodeToFile(module, optimizedBc)
+        }
+
         return optimizedBc
     }
 
