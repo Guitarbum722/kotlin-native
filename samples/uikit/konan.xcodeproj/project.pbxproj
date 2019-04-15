@@ -101,6 +101,7 @@
 				TargetAttributes = {
 					2CB540381F56C2C4006EE521 = {
 						CreatedOnToolsVersion = 8.3.3;
+						DevelopmentTeam = ZJVL2682PS;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -110,6 +111,7 @@
 			developmentRegion = English;
 			hasScannedForEncodings = 0;
 			knownRegions = (
+				English,
 				en,
 				Base,
 			);
@@ -293,11 +295,12 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				DEVELOPMENT_TEAM = ZJVL2682PS;
 				INFOPLIST_FILE = konan/Info.plist;
 				"KOTLIN_NATIVE_PRESET[sdk=iphoneos*]" = iosArm64;
 				"KOTLIN_NATIVE_PRESET[sdk=iphonesimulator*]" = iosX64;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				PRODUCT_BUNDLE_IDENTIFIER = org.jetbrains.konan;
+				PRODUCT_BUNDLE_IDENTIFIER = org.sergey.bogolepov;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 			};
 			name = Debug;
@@ -306,11 +309,12 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				DEVELOPMENT_TEAM = ZJVL2682PS;
 				INFOPLIST_FILE = konan/Info.plist;
 				"KOTLIN_NATIVE_PRESET[sdk=iphoneos*]" = iosArm64;
 				"KOTLIN_NATIVE_PRESET[sdk=iphonesimulator*]" = iosX64;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				PRODUCT_BUNDLE_IDENTIFIER = org.jetbrains.konan;
+				PRODUCT_BUNDLE_IDENTIFIER = org.sergey.bogolepov;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 			};
 			name = Release;
