@@ -31,13 +31,13 @@ public open class Throwable(open val message: String?, open val cause: Throwable
         getStackTraceStrings(stackTrace)
     }
 
-    public fun getStackTrace(): Array<String> = stackTraceStrings
+    fun getStackTrace(): Array<String> = stackTraceStrings
 
-    internal fun dumpStackTrace(): String = buildString {
-        dumpStackTraceTo(this)
-    }
+    fun printStackTrace(): Unit = dumpStackTraceTo(StdOut)
 
-    private fun dumpStackTraceTo(buffer: StringBuilder): Unit = with(buffer) {
+    internal fun dumpStackTrace(): String = buildString { dumpStackTraceTo(this) }
+
+    private fun dumpStackTraceTo(appendable: Appendable): Unit = with(appendable) {
         appendln(this@Throwable.toString())
 
         for (element in stackTraceStrings) {
@@ -47,13 +47,11 @@ public open class Throwable(open val message: String?, open val cause: Throwable
         cause?.let {
             // TODO: should skip common stack frames
             append("Caused by: ")
-            it.dumpStackTraceTo(buffer)
+            it.dumpStackTraceTo(this)
         }
     }
 
-    public fun printStackTrace(): Unit = print(dumpStackTrace())
-
-    override public fun toString(): String {
+    override fun toString(): String {
         val kClass = this::class
         val s = kClass.qualifiedName ?: kClass.simpleName ?: "Throwable"
         return if (message != null) s + ": " + message.toString() else s
@@ -65,3 +63,12 @@ private external fun getCurrentStackTrace(): NativePtrArray
 
 @SymbolName("Kotlin_getStackTraceStrings")
 private external fun getStackTraceStrings(stackTrace: NativePtrArray): Array<String>
+
+private fun Appendable.appendln() = append('\n')
+private fun Appendable.appendln(str: String) = append(str).appendln()
+
+private object StdOut: Appendable {
+    override fun append(c: Char) = apply { print(c) }
+    override fun append(csq: CharSequence?) = apply { print(csq) }
+    override fun append(csq: CharSequence?, start: Int, end: Int) = apply { print(csq?.subSequence(start, end)) }
+}
