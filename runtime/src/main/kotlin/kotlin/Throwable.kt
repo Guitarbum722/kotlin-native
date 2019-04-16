@@ -33,21 +33,29 @@ public open class Throwable(open val message: String?, open val cause: Throwable
 
     public fun getStackTrace(): Array<String> = stackTraceStrings
 
-    public fun printStackTrace(): Unit = dumpStackTraceTo(StdOut)
+    public fun printStackTrace(): Unit = dumpStackTrace { println(it) }
 
-    internal fun dumpStackTrace(): String = buildString { dumpStackTraceTo(this) }
+    internal fun dumpStackTrace(): String = buildString {
+        dumpStackTrace { appendln(it) }
+    }
 
-    private fun dumpStackTraceTo(appendable: Appendable): Unit = with(appendable) {
-        appendln(this@Throwable.toString())
-
-        for (element in stackTraceStrings) {
-            appendln("        at $element")
+    private inline fun writeStackTraceElements(throwable: Throwable, writeln: (String) -> Unit) {
+        for (element in throwable.stackTraceStrings) {
+            writeln("        at $element")
         }
+    }
 
-        cause?.let {
+    private inline fun dumpStackTrace(crossinline writeln: (String) -> Unit) {
+        writeln(this@Throwable.toString())
+
+        writeStackTraceElements(this, writeln)
+
+        var cause = this.cause
+        while (cause != null) {
             // TODO: should skip common stack frames
-            append("Caused by: ")
-            it.dumpStackTraceTo(this)
+            writeln("Caused by: $cause")
+            writeStackTraceElements(cause, writeln)
+            cause = cause.cause
         }
     }
 
@@ -63,12 +71,3 @@ private external fun getCurrentStackTrace(): NativePtrArray
 
 @SymbolName("Kotlin_getStackTraceStrings")
 private external fun getStackTraceStrings(stackTrace: NativePtrArray): Array<String>
-
-private fun Appendable.appendln() = append('\n')
-private fun Appendable.appendln(str: String) = append(str).appendln()
-
-private object StdOut: Appendable {
-    override fun append(c: Char) = apply { print(c) }
-    override fun append(csq: CharSequence?) = apply { print(csq) }
-    override fun append(csq: CharSequence?, start: Int, end: Int) = apply { print(csq?.subSequence(start, end)) }
-}
